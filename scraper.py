@@ -15,21 +15,30 @@ import sys
 # ==========================================
 
 def setup_driver():
-    """Initializes the browser with production-grade anti-detection settings."""
+    """Initializes the undetected chromedriver with production-grade settings."""
     options = uc.ChromeOptions()
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    
+    # Determine if running on Render/Linux
+    is_linux = sys.platform == "linux" or sys.platform == "linux2"
     
     try:
-        # Use Chrome version 147 as requested for stability
-        driver = uc.Chrome(version_main=147, options=options, headless=False)
+        # On Render/Linux, we MUST use headless mode
+        driver = uc.Chrome(version_main=147, options=options, headless=is_linux)
         return driver
     except Exception as e:
-        print(f"[ERROR] Driver setup failed: {e}")
-        sys.exit(1)
+        print(f"Error setting up driver: {e}")
+        # Fallback for local environments or if 147 is missing
+        try:
+            driver = uc.Chrome(options=options, headless=is_linux)
+            return driver
+        except:
+            sys.exit(1)
 
 def clean_text(text):
     """Removes weird symbols, icons, and newlines for a clean CSV."""
@@ -267,20 +276,27 @@ def extract_details(driver, index):
 # MAIN EXECUTION
 # ==========================================
 
-def run_scraper(query):
-    """Orchestrates the full scraping process and returns collected leads."""
+def run_scraper(query, log_queue=None):
+    """Orchestrates the full scraping process with optional logging support."""
+    def log(msg):
+        if log_queue: log_queue.put(msg)
+        print(msg)
+
+    log("Launching browser engine...")
     driver = setup_driver()
     leads = []
     seen_identifiers = set()
     total_loaded = 0
     
     try:
+        log("Opening Google Maps...")
         if search_google_maps(driver, query):
+            log("Searching query...")
             elements = scroll_results(driver, 55)
             total_loaded = len(elements)
             
             if elements:
-                print(f"\n[INFO] Starting deep extraction for {total_loaded} cards...")
+                log(f"Collecting results ({total_loaded} found)...")
                 for i in range(len(elements)):
                     lead = extract_details(driver, i)
                     if lead and lead['Business Name'] != "Unknown":
@@ -288,12 +304,13 @@ def run_scraper(query):
                         if uid not in seen_identifiers:
                             leads.append(lead)
                             seen_identifiers.add(uid)
-                            print(f"[{len(leads)}] Collected: {lead['Business Name']}")
+                            log(f"Extracted: {lead['Business Name']}")
                     
-                    time.sleep(random.uniform(0.5, 1.0))
+                    time.sleep(random.uniform(0.1, 0.3))
                     if len(leads) >= 70: break
             
             if leads:
+                log("Saving data to CSV...")
                 df = pd.DataFrame(leads)
                 ordered_cols = [
                     'Business Name', 'Full Address', 'Phone Number', 'Website URL', 
@@ -303,11 +320,12 @@ def run_scraper(query):
                 ]
                 df = df[ordered_cols]
                 df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
-                
+        
+        log("Process completed.")
         return leads, total_loaded
         
     except Exception as e:
-        print(f"[ERROR] Scraping failed: {e}")
+        log(f"Error: {e}")
         return [], 0
     finally:
         driver.quit()
