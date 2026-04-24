@@ -267,6 +267,51 @@ def extract_details(driver, index):
 # MAIN EXECUTION
 # ==========================================
 
+def run_scraper(query):
+    """Orchestrates the full scraping process and returns collected leads."""
+    driver = setup_driver()
+    leads = []
+    seen_identifiers = set()
+    total_loaded = 0
+    
+    try:
+        if search_google_maps(driver, query):
+            elements = scroll_results(driver, 55)
+            total_loaded = len(elements)
+            
+            if elements:
+                print(f"\n[INFO] Starting deep extraction for {total_loaded} cards...")
+                for i in range(len(elements)):
+                    lead = extract_details(driver, i)
+                    if lead and lead['Business Name'] != "Unknown":
+                        uid = f"{lead['Business Name']}_{lead['Full Address']}".lower()
+                        if uid not in seen_identifiers:
+                            leads.append(lead)
+                            seen_identifiers.add(uid)
+                            print(f"[{len(leads)}] Collected: {lead['Business Name']}")
+                    
+                    time.sleep(random.uniform(0.5, 1.0))
+                    if len(leads) >= 70: break
+            
+            if leads:
+                df = pd.DataFrame(leads)
+                ordered_cols = [
+                    'Business Name', 'Full Address', 'Phone Number', 'Website URL', 
+                    'Star Rating', 'Review Count', 'Business Category', 'Google Maps URL', 
+                    'Business Hours', 'Description', 'Scraped Date', 'City', 'State', 
+                    'Pincode', 'Latitude', 'Longitude', 'Open Status'
+                ]
+                df = df[ordered_cols]
+                df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
+                
+        return leads, total_loaded
+        
+    except Exception as e:
+        print(f"[ERROR] Scraping failed: {e}")
+        return [], 0
+    finally:
+        driver.quit()
+
 def main():
     print("\n" + "="*40)
     print("   LEADPULSE PRO - GOOGLE MAPS SCRAPER")
@@ -275,68 +320,21 @@ def main():
     query = input("\nEnter Keyword + City (e.g. dentists Bangalore): ").strip()
     if not query: return
     
-    driver = setup_driver()
-    leads = []
-    seen_identifiers = set() # For duplicate removal
+    leads, total_loaded = run_scraper(query)
     
-    try:
-        if search_google_maps(driver, query):
-            elements = scroll_results(driver, 55)
-            
-            if not elements:
-                print("[!] No results found after search.")
-            else:
-                print(f"\n[INFO] Starting deep extraction for {len(elements)} cards...")
-                
-                for i in range(len(elements)):
-                    lead = extract_details(driver, i)
-                    
-                    if lead and lead['Business Name'] != "Unknown":
-                        # Create unique ID from Name + Address (Cleaned)
-                        uid = f"{lead['Business Name']}_{lead['Full Address']}".lower()
-                        if uid not in seen_identifiers:
-                            leads.append(lead)
-                            seen_identifiers.add(uid)
-                            print(f"[{len(leads)}] Collected: {lead['Business Name']}")
-                        else:
-                            print(f"[DUPLICATE] Skipping: {lead['Business Name']}")
-                    
-                    # Anti-blocking delay
-                    time.sleep(random.uniform(0.5, 1.5))
-                    
-                    if len(leads) >= 70: break # Safety cap
-                
-                # Save Data
-                if leads:
-                    df = pd.DataFrame(leads)
-                    # Reorder columns to match user requirement exactly
-                    ordered_cols = [
-                        'Business Name', 'Full Address', 'Phone Number', 'Website URL', 
-                        'Star Rating', 'Review Count', 'Business Category', 'Google Maps URL', 
-                        'Business Hours', 'Description', 'Scraped Date', 'City', 'State', 
-                        'Pincode', 'Latitude', 'Longitude', 'Open Status'
-                    ]
-                    df = df[ordered_cols]
-                    df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
-                    
-                    print("\n" + "="*30)
-                    print("       FINAL SUMMARY")
-                    print("="*30)
-                    print(f"Total Results Loaded: {len(elements)}")
-                    print(f"Total Leads Saved:   {len(leads)}")
-                    print(f"CSV File Name:       day2_leads.csv")
-                    print("="*30)
-                else:
-                    print("\n[!] No leads could be successfully scraped.")
-        else:
-            print("[!] Search process failed completely.")
-            
-    except Exception as e:
-        print(f"\n[CRITICAL ERROR] Script crashed: {e}")
-    finally:
-        print("\n[!] Process Finished.")
-        input("Press Enter to close browser...")
-        driver.quit()
+    if leads:
+        print("\n" + "="*30)
+        print("       FINAL SUMMARY")
+        print("="*30)
+        print(f"Total Results Loaded: {total_loaded}")
+        print(f"Total Leads Saved:   {len(leads)}")
+        print(f"CSV File Name:       day2_leads.csv")
+        print("="*30)
+    else:
+        print("\n[!] No leads were successfully scraped.")
+        
+    print("\n[!] Process Finished.")
+    input("Press Enter to close browser...")
 
 if __name__ == "__main__":
     main()
