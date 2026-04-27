@@ -205,11 +205,18 @@ else:
     with col_viz:
         st.markdown("### Lead Density Analytics")
         if not df.empty:
-            # Simple Category Chart
-            cat_counts = df['Category'].value_counts().head(5)
-            fig = px.pie(values=cat_counts.values, names=cat_counts.index, hole=0.4)
-            fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250)
-            st.plotly_chart(fig, use_container_width=True)
+            # Handle potential column name mismatches
+            target_col = 'Category'
+            if 'Business Category' in df.columns and 'Category' not in df.columns:
+                df = df.rename(columns={'Business Category': 'Category'})
+            
+            if target_col in df.columns:
+                cat_counts = df[target_col].value_counts().head(5)
+                fig = px.pie(values=cat_counts.values, names=cat_counts.index, hole=0.4)
+                fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No Category data available for visualization.")
 
     # Master Lead List
     st.markdown("### Global Master Database")
