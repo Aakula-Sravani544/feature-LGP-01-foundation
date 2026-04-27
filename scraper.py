@@ -70,42 +70,56 @@ def upload_to_sheets(leads):
         print(f"Google Sheets Upload Failed: {e}")
 
 def setup_driver():
-    """Initializes the browser with cross-platform (Windows/Linux) support."""
-    options = uc.ChromeOptions()
+    """Initializes the browser with cross-platform (Windows/Linux) support and version control."""
+    import shutil
     
     # Check if running on Render
     is_render = os.environ.get('RENDER') is not None
     is_linux = sys.platform == "linux" or sys.platform == "linux2"
     
-    # Production-grade flags
+    # 1. Cleanup old drivers to prevent version mismatches
+    if not is_render:
+        try:
+            driver_cache = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
+            if os.path.exists(driver_cache):
+                shutil.rmtree(driver_cache, ignore_errors=True)
+        except: pass
+
+    options = uc.ChromeOptions()
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
     
     # Use headless for Linux/Render automatically
     headless = True if (is_render or is_linux) else False
     
     try:
-        # On Render, we might need to specify binary path if custom installed
+        # Enforce version 147 as requested by the user
         chrome_bin = os.environ.get('CHROME_BIN')
         if is_render and chrome_bin:
             options.binary_location = chrome_bin
             
-        driver = uc.Chrome(options=options, headless=headless)
+        driver = uc.Chrome(
+            version_main=147, 
+            options=options, 
+            headless=headless,
+            use_subprocess=True
+        )
         driver.set_page_load_timeout(60)
         return driver
     except Exception as e:
-        print(f"Driver Initialization Failed: {e}")
-        # Final fallback for cloud environments
+        print(f"Primary Driver (v147) Failed: {e}. Attempting fallback...")
+        # Final fallback for cloud environments or local mismatch
         try:
             from selenium import webdriver
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
             
             chrome_options = webdriver.ChromeOptions()
-            chrome_options.add_argument("--headless=new")
+            if headless: chrome_options.add_argument("--headless=new")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             
