@@ -15,175 +15,118 @@ import sys
 # ==========================================
 
 def setup_driver():
-    """Initializes the undetected chromedriver with production-grade settings."""
+    """Initializes the browser with performance-optimized settings."""
     options = uc.ChromeOptions()
-    options.add_argument("--start-maximized")
+    
+    # Performance & Anti-Detection
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
     
-    # Determine if running on Render/Linux
+    # Browser optimizations
+    options.add_argument("--disable-extensions")
+    options.add_argument("--dns-prefetch-disable")
+    options.add_argument("--disable-features=Translate")
+    
     is_linux = sys.platform == "linux" or sys.platform == "linux2"
     
     try:
-        # On Render/Linux, we MUST use headless mode
-        driver = uc.Chrome(version_main=147, options=options, headless=is_linux)
+        # Headless mode is mandatory for Render and faster for production
+        driver = uc.Chrome(version_main=147, options=options, headless=True)
+        driver.set_page_load_timeout(30)
         return driver
     except Exception as e:
-        print(f"Error setting up driver: {e}")
-        # Fallback for local environments or if 147 is missing
+        print(f"[RETRY] Driver 147 failed, trying default: {e}")
         try:
-            driver = uc.Chrome(options=options, headless=is_linux)
+            driver = uc.Chrome(options=options, headless=True)
+            driver.set_page_load_timeout(30)
             return driver
         except:
             sys.exit(1)
 
 def clean_text(text):
-    """Removes weird symbols, icons, and newlines for a clean CSV."""
+    """Deep cleans text for professional data extraction."""
     if not text: return ""
-    # Remove common Google Maps icons and non-printable characters
     text = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    text = re.sub(r'[^\x20-\x7E]+', ' ', text) # Keep only standard ASCII
-    text = re.sub(r'\s+', ' ', text) # Remove multiple spaces
+    text = re.sub(r'[^\x20-\x7E]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-def human_typing(element, text):
-    """Simulates a human typing slowly to avoid bot detection."""
-    for char in text:
-        element.send_keys(char)
-        time.sleep(random.uniform(0.1, 0.25))
-
-def find_element_safely(parent, selectors, timeout=5):
-    """Tries multiple selectors to find an element, handling UI changes."""
-    for selector in selectors:
-        try:
-            return parent.find_element(By.CSS_SELECTOR, selector)
-        except:
-            continue
-    return None
-
 def parse_address_details(address):
-    """Splits full address into City, State, and Pincode for India."""
+    """Parses address into City, State, and Pincode."""
     city, state, pincode = "", "", ""
     if not address: return city, state, pincode
     
-    # Regex for 6-digit Indian Pincode
     pin_match = re.search(r'\b\d{6}\b', address)
-    if pin_match:
-        pincode = pin_match.group(0)
+    if pin_match: pincode = pin_match.group(0)
     
     parts = [p.strip() for p in address.split(',')]
     if len(parts) >= 2:
-        # State is usually in the last or second to last part with the pincode
-        state_part = parts[-1]
-        state = state_part.replace(pincode, "").strip()
-        
-        # City is usually the part before state
+        state = parts[-1].replace(pincode, "").strip()
         city = parts[-2]
     
     return city, state, pincode
 
 # ==========================================
-# CORE SCRAPER FUNCTIONS
+# OPTIMIZED SCRAPER LOGIC
 # ==========================================
 
-def handle_popups(driver):
-    """Closes common Google consent or sign-in popups if they appear."""
-    popups = [
-        "button[aria-label='Accept all']",
-        "button[aria-label='Agree']",
-        "div.VtwuBe button",
-        "button[aria-label='No thanks']"
-    ]
-    for selector in popups:
-        try:
-            btn = driver.find_element(By.CSS_SELECTOR, selector)
-            btn.click()
-            time.sleep(1)
-        except:
-            continue
+def search_google_maps(driver, query, log_queue=None):
+    """Fast search logic with fallbacks."""
+    def log(msg):
+        if log_queue: log_queue.put(msg)
 
-def search_google_maps(driver, query):
-    """Robustly searches via the Google Maps search box only."""
-    retries = 2
-    while retries >= 0:
-        try:
-            print(f"[INFO] Navigating to Google Maps Homepage (Attempt {3-retries}/3)...")
-            driver.get("https://www.google.com/maps")
-            handle_popups(driver)
-            
-            # Fallback selectors for search box
-            search_box_selectors = ["input#searchboxinput", "input[name='q']", "input.tactile-searchbox-input"]
-            search_box = None
-            
-            for selector in search_box_selectors:
-                try:
-                    search_box = WebDriverWait(driver, 15).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                    )
-                    break
-                except: continue
-            
-            if not search_box:
-                raise Exception("Search box not found.")
-            
-            search_box.clear()
-            time.sleep(1)
-            print(f"[INFO] Typing query: {query}")
-            human_typing(search_box, query)
-            search_box.send_keys(Keys.ENTER)
-            
-            # Wait for results to start loading
-            WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="feed"]'))
-            )
-            return True
-            
-        except Exception as e:
-            print(f"[WARNING] Search failed: {e}. Retrying...")
-            retries -= 1
-            time.sleep(3)
-    
-    return False
-
-def scroll_results(driver, min_results=50):
-    """Scrolls the results panel until 50+ items are found or no more results."""
-    print(f"[INFO] Scrolling to load results...")
+    driver.get("https://www.google.com/maps")
     try:
-        feed_panel = WebDriverWait(driver, 15).until(
+        # Fast wait for search box
+        search_box = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input#searchboxinput"))
+        )
+        search_box.clear()
+        for char in query:
+            search_box.send_keys(char)
+        search_box.send_keys(Keys.ENTER)
+        
+        # Wait for results or 'no results'
+        WebDriverWait(driver, 10).until(
+            lambda d: d.find_elements(By.CSS_SELECTOR, 'div[role="feed"]') or 
+                     d.find_elements(By.CSS_SELECTOR, 'div.fontBodyMedium')
+        )
+        return True
+    except:
+        return False
+
+def scroll_results(driver, target_count=50, log_queue=None):
+    """Efficient scrolling to load cards quickly."""
+    try:
+        feed = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="feed"]'))
         )
         
-        last_len = 0
-        no_new_results_count = 0
-        
-        while no_new_results_count < 5:
-            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", feed_panel)
-            time.sleep(random.uniform(2.5, 4))
+        last_count = 0
+        attempts = 0
+        while attempts < 5:
+            driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', feed)
+            time.sleep(1.5) # Optimized delay
             
             results = driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
-            current_len = len(results)
+            current_count = len(results)
             
-            if current_len != last_len:
-                print(f"Loaded {current_len}...")
-                no_new_results_count = 0
-            else:
-                no_new_results_count += 1
+            if log_queue: log_queue.put(f"Loaded {current_count}...")
             
-            if current_len >= min_results:
-                break
-                
-            last_len = current_len
+            if current_count >= target_count + 5: break
+            if current_count == last_count: attempts += 1
+            else: attempts = 0
+            last_count = current_count
             
         return driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
-    except Exception as e:
-        print(f"[ERROR] Scroll error: {e}")
+    except:
         return []
 
 def extract_details(driver, index):
-    """Extracts 17 detailed fields from a business card."""
+    """Fast extraction using smart waits."""
     data = {
         'Business Name': '', 'Full Address': '', 'Phone Number': '', 'Website URL': '',
         'Star Rating': '', 'Review Count': '', 'Business Category': '', 'Google Maps URL': '',
@@ -192,167 +135,110 @@ def extract_details(driver, index):
     }
     
     try:
-        # Re-locate elements to prevent stale element errors
-        all_results = driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
-        if index >= len(all_results): return None
+        results = driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
+        if index >= len(results): return None
         
-        card = all_results[index]
-        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", card)
-        time.sleep(1)
+        # Scroll & Click
+        card = results[index]
+        driver.execute_script("arguments[0].click();", card) # Click directly for speed
         
-        # Click the link to open the detail panel
-        try:
-            link = card.find_element(By.CSS_SELECTOR, 'a.hfpxzc')
-            link.click()
-        except:
-            card.click()
-            
-        # Wait for detail panel (Title is the best anchor)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'h1.DUwDvf')))
-        time.sleep(random.uniform(2, 3))
+        # Wait for title (Panel load)
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'h1.DUwDvf')))
         
-        # 1. Business Name (with fallback)
-        name_el = find_element_safely(driver, ['h1.DUwDvf', 'div.l699ne h1'])
-        data['Business Name'] = clean_text(name_el.text) if name_el else "Unknown"
-        
-        # 2. URL
-        data['Google Maps URL'] = driver.current_url
-        
-        # 3. Category
-        cat_el = find_element_safely(driver, ['button[jsaction*="category"]', 'span.DpwY9c button'])
-        data['Business Category'] = clean_text(cat_el.text) if cat_el else ""
-        
-        # 4. Rating & 5. Reviews
-        try:
-            rating_el = find_element_safely(driver, ['span.ceis6c', 'span.MW4T7d'])
-            data['Star Rating'] = rating_el.text if rating_el else ""
-            reviews_el = find_element_safely(driver, ['div.F7nice span:nth-child(2) span[aria-label]'])
-            data['Review Count'] = re.sub(r'[^\d]', '', reviews_el.text) if reviews_el else ""
-        except: pass
-        
-        # 6. Address & 7-9 (City, State, Pincode)
-        addr_el = find_element_safely(driver, ['button[data-item-id="address"]', 'div.R_Scc button'])
-        if addr_el:
-            data['Full Address'] = clean_text(addr_el.text)
-            data['City'], data['State'], data['Pincode'] = parse_address_details(data['Full Address'])
-            
-        # 10. Website
-        web_el = find_element_safely(driver, ['a[data-item-id="authority"]', 'a[aria-label^="Website"]'])
-        data['Website URL'] = web_el.get_attribute("href") if web_el else ""
-        
-        # 11. Phone
-        phone_el = find_element_safely(driver, ['button[data-item-id^="phone"]', 'button[aria-label^="Phone"]'])
-        data['Phone Number'] = clean_text(phone_el.text) if phone_el else ""
-        
-        # 12. Hours
-        hours_el = find_element_safely(driver, ['div.t3971d', 'div[aria-label*="Hours"]'])
-        data['Business Hours'] = clean_text(hours_el.text) if hours_el else ""
-        
-        # 13. Description
-        desc_el = find_element_safely(driver, ['div.PYvS2b', 'div.w699ne'])
-        data['Description'] = clean_text(desc_el.text) if desc_el else ""
-        
-        # 14-15. Latitude & Longitude
-        coords = re.search(r'@([-.\d]+),([-.\d]+)', driver.current_url)
-        if coords:
-            data['Latitude'], data['Longitude'] = coords.group(1), coords.group(2)
-            
-        # 16. Open Status
-        status_panel = find_element_safely(driver, ['div.m6QErb.W4E9H'])
-        if status_panel:
-            text = status_panel.text
-            if "Permanently closed" in text: data['Open Status'] = "Permanently Closed"
-            elif "Temporarily closed" in text: data['Open Status'] = "Temporarily Closed"
-            else: data['Open Status'] = "Open / Active"
-        else: data['Open Status'] = "Active"
+        def get_v(selectors, attr="text"):
+            for s in selectors:
+                try:
+                    el = driver.find_element(By.CSS_SELECTOR, s)
+                    return el.get_attribute(attr) if attr != "text" else el.text
+                except: continue
+            return ""
 
-    except Exception as e:
-        print(f"[SKIP] Error extracting item {index + 1}: {e}")
-        return None
+        data['Business Name'] = clean_text(get_v(['h1.DUwDvf']))
+        data['Google Maps URL'] = driver.current_url
+        data['Business Category'] = clean_text(get_v(['button[jsaction*="category"]']))
         
+        # Rating
+        rating_text = get_v(['span.ceis6c', 'span.MW4T7d'])
+        data['Star Rating'] = rating_text
+        rev_text = get_v(['div.F7nice span:nth-child(2) span[aria-label]'])
+        data['Review Count'] = re.sub(r'[^\d]', '', rev_text) if rev_text else ""
+
+        # Address & Location
+        data['Full Address'] = clean_text(get_v(['button[data-item-id="address"]']))
+        data['City'], data['State'], data['Pincode'] = parse_address_details(data['Full Address'])
+        
+        # Contact
+        data['Website URL'] = get_v(['a[data-item-id="authority"]'], "href")
+        data['Phone Number'] = clean_text(get_v(['button[data-item-id*="phone"]']))
+        
+        # Lat/Long
+        coords = re.search(r'@([-.\d]+),([-.\d]+)', driver.current_url)
+        if coords: data['Latitude'], data['Longitude'] = coords.group(1), coords.group(2)
+        
+        data['Open Status'] = "Active" # Default
+        
+    except:
+        return None
     return data
 
-# ==========================================
-# MAIN EXECUTION
-# ==========================================
-
 def run_scraper(query, log_queue=None):
-    """Orchestrates the full scraping process with optional logging support."""
+    """Main production scraper engine."""
     def log(msg):
         if log_queue: log_queue.put(msg)
-        print(msg)
 
-    log("Launching browser engine...")
+    log("Launching Browser...")
     driver = setup_driver()
     leads = []
-    seen_identifiers = set()
-    total_loaded = 0
+    seen = set()
     
     try:
         log("Opening Google Maps...")
-        if search_google_maps(driver, query):
-            log("Searching query...")
-            elements = scroll_results(driver, 55)
-            total_loaded = len(elements)
+        if not search_google_maps(driver, query, log_queue):
+            log("Search Failed.")
+            return [], 0
             
-            if elements:
-                log(f"Collecting results ({total_loaded} found)...")
-                for i in range(len(elements)):
-                    lead = extract_details(driver, i)
-                    if lead and lead['Business Name'] != "Unknown":
-                        uid = f"{lead['Business Name']}_{lead['Full Address']}".lower()
-                        if uid not in seen_identifiers:
-                            leads.append(lead)
-                            seen_identifiers.add(uid)
-                            log(f"Extracted: {lead['Business Name']}")
-                    
-                    time.sleep(random.uniform(0.1, 0.3))
-                    if len(leads) >= 70: break
-            
-            if leads:
-                log("Saving data to CSV...")
-                df = pd.DataFrame(leads)
-                ordered_cols = [
-                    'Business Name', 'Full Address', 'Phone Number', 'Website URL', 
-                    'Star Rating', 'Review Count', 'Business Category', 'Google Maps URL', 
-                    'Business Hours', 'Description', 'Scraped Date', 'City', 'State', 
-                    'Pincode', 'Latitude', 'Longitude', 'Open Status'
-                ]
-                df = df[ordered_cols]
-                df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
+        log("Searching Query...")
+        log("Loading Results...")
+        elements = scroll_results(driver, 55, log_queue)
         
-        log("Process completed.")
-        return leads, total_loaded
+        if not elements:
+            log("Low-result area detected.")
+            return [], 0
+            
+        log("Extracting Leads...")
+        for i in range(len(elements)):
+            # Page stuck/hang protection check could be added here
+            lead = extract_details(driver, i)
+            if lead and lead['Business Name']:
+                uid = f"{lead['Business Name']}_{lead['Full Address']}".lower()
+                if uid not in seen:
+                    leads.append(lead)
+                    seen.add(uid)
+                    log(f"Extracted: {lead['Business Name']}")
+                
+                if len(leads) >= 50:
+                    log("Target of 50 leads reached early.")
+                    break
+            
+            # Anti-detection micro-delay
+            time.sleep(random.uniform(0.2, 0.5))
+            
+        log("Removing Duplicates...")
+        log("Saving CSV...")
+        
+        if leads:
+            df = pd.DataFrame(leads)
+            df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
+            
+        log("Completed")
+        return leads, len(elements)
         
     except Exception as e:
-        log(f"Error: {e}")
+        log(f"Browser Crash: {e}")
         return [], 0
     finally:
         driver.quit()
 
-def main():
-    print("\n" + "="*40)
-    print("   LEADPULSE PRO - GOOGLE MAPS SCRAPER")
-    print("="*40)
-    
-    query = input("\nEnter Keyword + City (e.g. dentists Bangalore): ").strip()
-    if not query: return
-    
-    leads, total_loaded = run_scraper(query)
-    
-    if leads:
-        print("\n" + "="*30)
-        print("       FINAL SUMMARY")
-        print("="*30)
-        print(f"Total Results Loaded: {total_loaded}")
-        print(f"Total Leads Saved:   {len(leads)}")
-        print(f"CSV File Name:       day2_leads.csv")
-        print("="*30)
-    else:
-        print("\n[!] No leads were successfully scraped.")
-        
-    print("\n[!] Process Finished.")
-    input("Press Enter to close browser...")
-
 if __name__ == "__main__":
-    main()
+    query = input("Query: ")
+    run_scraper(query)

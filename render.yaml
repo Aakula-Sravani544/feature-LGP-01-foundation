@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: leadpulse-pro
+    runtime: python
+    buildCommand: ./build.sh
+    startCommand: python -m streamlit run app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: CHROME_BIN
+        value: /opt/render/project/src/.storage/chrome/opt/google/chrome/google-chrome
+      - key: CHROMEDRIVER_PATH
+        value: /usr/local/bin/chromedriver
+    plan: free # Change to 'starter' or higher if memory issues occur
