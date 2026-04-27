@@ -28,7 +28,19 @@ def upload_to_sheets(leads):
     if not leads: return
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_file("creds.json", scopes=scope)
+        
+        # Check for credentials in Env Var (Render) first, then local file
+        creds_json = os.environ.get('GOOGLE_SHEETS_JSON')
+        if creds_json:
+            import json
+            creds_info = json.loads(creds_json)
+            creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+        elif os.path.exists("creds.json"):
+            creds = Credentials.from_service_account_file("creds.json", scopes=scope)
+        else:
+            print("SKIP: Google Sheets sync skipped (creds.json not found and GOOGLE_SHEETS_JSON env var empty).")
+            return
+
         client = gspread.authorize(creds)
         
         # Open the spreadsheet
