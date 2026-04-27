@@ -113,56 +113,70 @@ if role == "User Dashboard":
     if run_btn and query:
         st.session_state.running = True
         st.session_state.start_time = time.time()
-        st.session_state.logs = ""
+        st.session_state.logs = "Initializing Scraper Engine...\n"
         st.session_state.live_count = 0
         
         timer_p = st.empty()
         log_p = st.empty()
         
-        # Start Backend Scraper
-        process = subprocess.Popen(
-            [sys.executable, "scraper.py", query],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
+        # Resolve absolute path for scraper.py
+        scraper_path = os.path.join(os.getcwd(), "scraper.py")
         
-        while True:
-            # Update Timer
-            st.session_state.elapsed = int(time.time() - st.session_state.start_time)
-            mins, secs = divmod(st.session_state.elapsed, 60)
-            timer_p.markdown(f'<div class="timer-display">{mins:02d}:{secs:02d}</div>', unsafe_allow_html=True)
+        try:
+            # Start Backend Scraper
+            process = subprocess.Popen(
+                [sys.executable, scraper_path, query],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                env=os.environ.copy() # Pass current environment
+            )
             
-            # Read Logs & Update Live Count
-            line = process.stdout.readline()
-            if line:
-                st.session_state.logs += f"[{datetime.now().strftime('%H:%M:%S')}] {line}"
-                if "Extracted:" in line:
-                    st.session_state.live_count += 1
+            while True:
+                # Update Timer
+                st.session_state.elapsed = int(time.time() - st.session_state.start_time)
+                mins, secs = divmod(st.session_state.elapsed, 60)
+                timer_p.markdown(f'<div class="timer-display">{mins:02d}:{secs:02d}</div>', unsafe_allow_html=True)
                 
-                # Show last 12 lines of logs
-                log_lines = st.session_state.logs.splitlines()[-12:]
-                log_p.markdown(f'<div class="log-container">{"<br>".join(log_lines)}</div>', unsafe_allow_html=True)
-            
-            # SLA Timeout (10 Mins)
-            if st.session_state.elapsed > 600:
-                process.terminate()
-                st.error("🚨 Process terminated: 10-minute SLA exceeded.")
-                st.session_state.running = False
-                break
+                # Read Logs & Update Live Count
+                line = process.stdout.readline()
+                if line:
+                    st.session_state.logs += f"[{datetime.now().strftime('%H:%M:%S')}] {line}"
+                    if "Extracted:" in line:
+                        st.session_state.live_count += 1
+                    
+                    # Show logs
+                    log_lines = st.session_state.logs.splitlines()[-12:]
+                    log_p.markdown(f'<div class="log-container">{"<br>".join(log_lines)}</div>', unsafe_allow_html=True)
                 
-            # Completion Check
-            if process.poll() is not None:
-                st.success(f"✨ Scraper Completed in {mins:02d}:{secs:02d}!")
-                st.session_state.running = False
-                st.balloons()
-                time.sleep(2)
-                st.rerun()
-                break
-            
-            time.sleep(0.1)
+                # SLA Timeout (10 Mins)
+                if st.session_state.elapsed > 600:
+                    process.terminate()
+                    st.error("🚨 Process terminated: 10-minute SLA exceeded.")
+                    st.session_state.running = False
+                    break
+                    
+                # Completion Check
+                if process.poll() is not None:
+                    # Capture remaining logs
+                    remaining_output = process.stdout.read()
+                    if remaining_output:
+                        st.session_state.logs += remaining_output
+                        
+                    st.success(f"✨ Scraper Completed in {mins:02d}:{secs:02d}!")
+                    st.session_state.running = False
+                    st.balloons()
+                    time.sleep(2)
+                    st.rerun()
+                    break
+                
+                time.sleep(0.1)
+        except Exception as e:
+            st.error(f"Failed to launch scraper: {e}")
+            st.session_state.running = False
+            st.rerun()
 
     # RESULTS TABLE
     if df is not None and not st.session_state.running:
