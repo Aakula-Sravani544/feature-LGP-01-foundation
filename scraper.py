@@ -240,5 +240,6 @@ def run_scraper(query, log_queue=None):
         driver.quit()
 
 if __name__ == "__main__":
-    query = input("Query: ")
-    run_scraper(query)
+    import sys
+    query_str = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else input("Enter query: ")
+    run_scraper(query_str)

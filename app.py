@@ -2,176 +2,197 @@ import streamlit as st
 import pandas as pd
 import os
 import time
-import threading
-import queue
+import subprocess
+import sys
 from datetime import datetime
-from scraper import run_scraper
 
 # ==========================================
 # PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
     page_title="LeadPulse Pro - Enterprise Dashboard",
-    page_icon="💎",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_icon="🚀",
+    layout="wide"
 )
 
-# Premium UI Styling
+# Custom Styling
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    .stMetric { background: white; padding: 20px; border-radius: 12px; border: 1px solid #f0f0f0; }
-    .log-terminal { background: #0f172a; color: #10b981; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; height: 180px; overflow-y: auto; font-size: 0.85rem; }
-    .timer-panel { background: white; padding: 20px; border-radius: 15px; border: 2px solid #e2e8f0; text-align: center; }
+    .stButton>button { border-radius: 10px; transition: all 0.3s; height: 100px; }
+    .stButton>button:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+    .log-container { background: #1e1e1e; color: #32cd32; padding: 15px; border-radius: 8px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; border: 1px solid #333; }
+    .timer-val { font-size: 3rem; font-weight: 800; color: #6366f1; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# SIDEBAR NAVIGATION
+# SESSION STATE INITIALIZATION
+# ==========================================
+if 'is_running' not in st.session_state: st.session_state.is_running = False
+if 'logs' not in st.session_state: st.session_state.logs = ""
+if 'start_time' not in st.session_state: st.session_state.start_time = None
+if 'elapsed_time' not in st.session_state: st.session_state.elapsed_time = 0
+if 'current_view' not in st.session_state: st.session_state.current_view = "Table"
+
+# ==========================================
+# DATA UTILITIES
+# ==========================================
+def get_leads_df():
+    if os.path.exists("day2_leads.csv"):
+        try: return pd.read_csv("day2_leads.csv")
+        except: return None
+    return None
+
+def calculate_metrics(df, duration):
+    if df is None or len(df) == 0:
+        return {"count": 0, "lpm": 0.0, "quality": 0}
+    
+    count = len(df)
+    lpm = round(count / (duration / 60), 1) if duration > 0 else 0.0
+    
+    # Quality: Has Phone AND Website
+    quality_rows = df.dropna(subset=['Phone Number', 'Website URL'])
+    quality_pct = int((len(quality_rows) / count) * 100) if count > 0 else 0
+    
+    return {"count": count, "lpm": lpm, "quality": quality_pct}
+
+# ==========================================
+# SIDEBAR
 # ==========================================
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/1055/1055644.png", width=60)
     st.title("LeadPulse Pro")
-    st.markdown("---")
-    role = st.selectbox("Switch Workspace", ["User Dashboard", "Client Dashboard"], index=0)
-    st.markdown("---")
-    st.success("✅ Day 1 Status: Complete")
-    st.success("✅ Day 2 Status: Complete")
-    st.info("Performance Engine: Active")
+    st.divider()
+    role = st.radio("Access Level", ["User Dashboard", "Client Dashboard"])
+    st.divider()
+    st.info(f"System: {'🟢 Running' if st.session_state.is_running else '⚪ Idle'}")
+    if st.button("Reset Session"):
+        st.session_state.is_running = False
+        st.session_state.logs = ""
+        st.rerun()
 
 # ==========================================
-# UTILITIES
-# ==========================================
-def format_time(seconds):
-    return time.strftime("%M:%S", time.gmtime(max(0, seconds)))
-
-def get_leads_df():
-    if os.path.exists("day2_leads.csv"):
-        return pd.read_csv("day2_leads.csv")
-    return None
-
-def render_timer(elapsed):
-    max_allowed = 600
-    remaining = max_allowed - elapsed if elapsed < max_allowed else 0
-    color = "#10b981" if elapsed < max_allowed else "#ef4444"
-    bg = "#ecfdf5" if elapsed < max_allowed else "#fef2f2"
-    
-    timer_html = f"""
-    <div style="background: {bg}; padding: 20px; border-radius: 15px; border: 2px solid {color}; text-align: center;">
-        <h3 style="color: {color}; margin: 0; font-size: 1.1rem;">🕒 Production Performance Monitor</h3>
-        <div style="display: flex; justify-content: space-around; margin-top: 15px;">
-            <div><small style="color: #64748b;">Elapsed</small><br><b style="font-size: 1.5rem;">{format_time(elapsed)}</b></div>
-            <div><small style="color: #64748b;">Remaining</small><br><b style="font-size: 1.5rem; color: {color};">{format_time(remaining)}</b></div>
-            <div><small style="color: #64748b;">Max Allowed</small><br><b style="font-size: 1.5rem;">10:00</b></div>
-        </div>
-        {f'<div style="color: #ef4444; font-weight: bold; margin-top: 10px;">⚠️ Optimization required - exceeded target time</div>' if elapsed >= max_allowed else ''}
-    </div>
-    """
-    return timer_html
-
-# ==========================================
-# USER DASHBOARD
+# MAIN DASHBOARD (USER)
 # ==========================================
 if role == "User Dashboard":
-    st.title("User Dashboard 🚀")
+    st.title("Enterprise Dashboard 💎")
     
-    # Clickable Stats Cards
-    leads_df = get_leads_df()
-    total_leads = len(leads_df) if leads_df is not None else 0
+    df = get_leads_df()
+    metrics = calculate_metrics(df, st.session_state.elapsed_time)
     
+    # CLICKABLE CARDS
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.button(f"📊 Current Leads\n{total_leads}", use_container_width=True)
-    with c2: st.button("⚡ Efficiency\nHigh Speed", use_container_width=True)
-    with c3: st.button("💎 Data Quality\nVerified", use_container_width=True)
-    with c4: st.button("🛡️ Status\nOptimized", use_container_width=True)
+    with c1:
+        if st.button(f"📊 Current Leads\n{metrics['count']}", use_container_width=True):
+            st.session_state.current_view = "Table"
+    with c2:
+        if st.button(f"⚡ Efficiency\n{metrics['lpm']} LPM", use_container_width=True):
+            st.info("Efficiency: Leads Generated Per Minute during the last run.")
+    with c3:
+        if st.button(f"💎 Data Quality\n{metrics['quality']}%", use_container_width=True):
+            st.info("Data Quality: Percentage of leads with complete phone and website info.")
+    with c4:
+        status_txt = "Active" if st.session_state.is_running else "Ready"
+        if st.button(f"🛡️ Status\n{status_txt}", use_container_width=True):
+            st.info("System Status: Checks if the scraping engine is currently engaged.")
 
     st.divider()
 
-    # Search Section
-    col_in, col_btn = st.columns([4, 1])
-    with col_in:
-        query = st.text_input("Search Keyword", placeholder="e.g., IT Companies Chennai", label_visibility="collapsed")
-    with col_btn:
-        run_btn = st.button("Generate Leads", use_container_width=True, type="primary")
+    # SEARCH & GENERATE
+    col_q, col_b = st.columns([4, 1])
+    with col_q:
+        query = st.text_input("Target Keyword", placeholder="e.g., Dentists Bangalore", label_visibility="collapsed", disabled=st.session_state.is_running)
+    with col_b:
+        btn_label = "Scraping..." if st.session_state.is_running else "Generate Leads"
+        start_btn = st.button(btn_label, type="primary", use_container_width=True, disabled=st.session_state.is_running)
 
-    if run_btn:
-        if query:
-            log_queue = queue.Queue()
-            res_box = {"leads": [], "total": 0, "err": None}
+    # PROCESS EXECUTION
+    if start_btn and query:
+        st.session_state.is_running = True
+        st.session_state.start_time = time.time()
+        st.session_state.logs = ""
+        st.session_state.elapsed_time = 0
+        
+        timer_placeholder = st.empty()
+        log_placeholder = st.empty()
+        
+        # Execute Scraper
+        # Use sys.executable to ensure we use the same environment
+        process = subprocess.Popen(
+            [sys.executable, "scraper.py", query],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # MONITORING LOOP
+        while True:
+            # Update Timer
+            st.session_state.elapsed_time = int(time.time() - st.session_state.start_time)
+            mm = st.session_state.elapsed_time // 60
+            ss = st.session_state.elapsed_time % 60
+            timer_placeholder.markdown(f'<div class="timer-val">{mm:02d}:{ss:02d}</div>', unsafe_allow_html=True)
             
-            def scrape_thread():
-                try:
-                    res_box["leads"], res_box["total"] = run_scraper(query, log_queue)
-                except Exception as e:
-                    res_box["err"] = str(e)
-
-            thread = threading.Thread(target=scrape_thread)
-            thread.start()
+            # Read Logs
+            line = process.stdout.readline()
+            if line:
+                st.session_state.logs += f"{datetime.now().strftime('%H:%M:%S')} | {line}"
+                # Limit logs for performance
+                lines = st.session_state.logs.splitlines()[-15:]
+                log_placeholder.markdown(f'<div class="log-container">{"<br>".join(lines)}</div>', unsafe_allow_html=True)
             
-            # UI Placeholders
-            timer_p = st.empty()
-            progress_p = st.empty()
-            log_p = st.empty()
-            
-            start_time = time.time()
-            logs = []
-            
-            while thread.is_alive():
-                elapsed = time.time() - start_time
+            # Timeout Check (10 mins = 600s)
+            if st.session_state.elapsed_time > 600:
+                process.terminate()
+                st.error("❌ Critical Timeout: Process terminated after 10 minutes.")
+                st.session_state.is_running = False
+                break
                 
-                # Drain logs
-                while not log_queue.empty():
-                    msg = log_queue.get()
-                    logs.append(f"[{format_time(time.time()-start_time)}] {msg}")
-                
-                # Update UI
-                timer_p.markdown(render_timer(elapsed), unsafe_allow_html=True)
-                log_p.markdown(f'<div class="log-terminal">{"<br>".join(logs[-10:])}</div>', unsafe_allow_html=True)
-                progress_p.progress(min(int(elapsed/600 * 100), 100))
-                
-                time.sleep(1)
-            
-            # Finalize
-            duration = time.time() - start_time
-            if res_box["leads"]:
-                st.success(f"Day 2 Completed Successfully! Generated {len(res_box['leads'])} leads in {format_time(duration)}")
-                
-                # Stats Summary
-                s1, s2, s3 = st.columns(3)
-                s1.metric("Total Leads Generated", len(res_box["leads"]))
-                s2.metric("Total Time Taken", format_time(duration))
-                s3.metric("Leads Per Minute", round(len(res_box["leads"])/(duration/60), 1))
-                
+            # Process Completion
+            if process.poll() is not None:
+                st.success(f"✅ Generation Completed in {mm:02d}:{ss:02d}!")
+                st.session_state.is_running = False
                 st.balloons()
+                time.sleep(2)
                 st.rerun()
-            elif res_box["err"]:
-                st.error(f"Scraper Error: {res_box['err']}")
-            else:
-                st.warning("No results found or process stopped.")
-        else:
-            st.warning("Enter a keyword first.")
+                break
+            
+            time.sleep(0.1) # Small delay to prevent UI lockup
 
-    # Data Display
-    if leads_df is not None:
-        st.subheader("Extracted Results")
-        st.dataframe(leads_df, use_container_width=True, hide_index=True)
-        st.download_button("📥 Download CSV", data=leads_df.to_csv(index=False).encode('utf-8-sig'), file_name="day2_leads.csv", mime="text/csv")
+    # DISPLAY RESULTS
+    if df is not None and not st.session_state.is_running:
+        st.subheader("Live Results")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        csv = df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 Download Lead Database (CSV)", data=csv, file_name="day2_leads.csv", mime="text/csv", use_container_width=True)
 
 # ==========================================
-# CLIENT DASHBOARD
+# MAIN DASHBOARD (CLIENT)
 # ==========================================
 else:
-    st.title("Client Dashboard 💎")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Leads", "1,520")
-    m2.metric("Searches Today", "42")
-    m3.metric("User Count", "12")
-    m4.metric("Status", "Online")
+    st.title("Client Analytics Dashboard 📈")
+    st.markdown("### Global Platform Performance")
+    
+    # Mock Global Analytics
+    ga1, ga2, ga3 = st.columns(3)
+    ga1.metric("Total Platform Leads", "18,420", "+12%")
+    ga2.metric("System Uptime", "99.9%", "Stable")
+    ga3.metric("API Efficiency", "240ms", "-15ms")
+    
     st.divider()
-    st.subheader("Global Search Trends")
-    st.line_chart(pd.DataFrame({"Searches": [10, 25, 15, 40, 35, 50]}, index=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]))
+    st.subheader("Global Search Volume")
+    chart_data = pd.DataFrame({
+        'Date': pd.date_range(start='2026-04-01', periods=7),
+        'Searches': [120, 150, 180, 140, 210, 250, 300]
+    })
+    st.line_chart(chart_data.set_index('Date'))
 
-st.markdown("---")
-st.caption("LeadPulse Pro v1.4 | Performance Production Engine")
+# ==========================================
+# FOOTER
+# ==========================================
+st.divider()
+st.caption("LeadPulse Pro v1.5 | Enterprise Edition | © 2026")
