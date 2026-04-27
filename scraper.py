@@ -1,289 +1,170 @@
 import time
-import random
 import pandas as pd
-import re
+import sys
 import os
-from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import undetected_chromedriver as uc
-import sys
-import hashlib
-import gspread
-from google.oauth2.service_account import Credentials
-
-# ==========================================
-# CONFIGURATION & UTILITIES
-# ==========================================
-
-def get_lead_id(name, address):
-    """Generates a unique 12-character lead_id using MD5 hash of name and address."""
-    unique_str = f"{name}_{address}".lower().strip()
-    return hashlib.md5(unique_str.encode()).hexdigest()[:12]
-
-def upload_to_sheets(leads):
-    """Uploads a list of lead dictionaries to the LeadPulse_Data Google Sheet."""
-    if not leads: return
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        
-        # Check for credentials in Env Var (Render) first, then local file
-        creds_json = os.environ.get('GOOGLE_SHEETS_JSON')
-        if creds_json:
-            import json
-            creds_info = json.loads(creds_json)
-            creds = Credentials.from_service_account_info(creds_info, scopes=scope)
-        elif os.path.exists("creds.json"):
-            creds = Credentials.from_service_account_file("creds.json", scopes=scope)
-        else:
-            print("SKIP: Google Sheets sync skipped (creds.json not found and GOOGLE_SHEETS_JSON env var empty).")
-            return
-
-        client = gspread.authorize(creds)
-        
-        # Open the spreadsheet
-        sh = client.open("LeadPulse_Data")
-        sheet = sh.sheet1
-        
-        # Prepare data for bulk upload (Headers if empty)
-        if not sheet.get_all_values():
-            headers = ["Lead ID"] + list(leads[0].keys())
-            sheet.append_row(headers)
-        
-        # Get existing IDs to prevent duplicates in the sheet
-        existing_ids = set(sheet.col_values(1))
-        
-        rows_to_add = []
-        for lead in leads:
-            lid = get_lead_id(lead['Business Name'], lead['Full Address'])
-            if lid not in existing_ids:
-                row = [lid] + list(lead.values())
-                rows_to_add.append(row)
-                existing_ids.add(lid)
-        
-        if rows_to_add:
-            sheet.append_rows(rows_to_add)
-            print(f"Uploaded {len(rows_to_add)} new leads to Google Sheets.")
-    except Exception as e:
-        print(f"Google Sheets Upload Failed: {e}")
-
-def setup_driver():
-    """Initializes the browser with cross-platform (Windows/Linux) support and version control."""
-    import shutil
-    
-    # Check if running on Render
-    is_render = os.environ.get('RENDER') is not None
-    is_linux = sys.platform == "linux" or sys.platform == "linux2"
-    
-    # 1. Cleanup old drivers to prevent version mismatches
-    if not is_render:
-        try:
-            driver_cache = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
-            if os.path.exists(driver_cache):
-                shutil.rmtree(driver_cache, ignore_errors=True)
-        except: pass
-
-    options = uc.ChromeOptions()
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    
-    # Use headless for Linux/Render automatically
-    headless = True if (is_render or is_linux) else False
-    
-    try:
-        # Enforce version 147 as requested by the user
-        chrome_bin = os.environ.get('CHROME_BIN')
-        if is_render and chrome_bin:
-            options.binary_location = chrome_bin
-            
-        driver = uc.Chrome(
-            version_main=147, 
-            options=options, 
-            headless=headless,
-            use_subprocess=True
-        )
-        driver.set_page_load_timeout(60)
-        return driver
-    except Exception as e:
-        print(f"Primary Driver (v147) Failed: {e}. Attempting fallback...")
-        # Final fallback for cloud environments or local mismatch
-        try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.service import Service
-            from webdriver_manager.chrome import ChromeDriverManager
-            
-            chrome_options = webdriver.ChromeOptions()
-            if headless: chrome_options.add_argument("--headless=new")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            return driver
-        except Exception as e2:
-            print(f"Critical Error: All browser engines failed. {e2}")
-            return None
-
-def clean_text(text):
-    if not text: return ""
-    text = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    text = re.sub(r'[^\x20-\x7E]+', ' ', text)
-    return text.strip()
-
-def parse_address_details(address):
-    city, state, pincode = "", "", ""
-    if not address: return city, state, pincode
-    pin_match = re.search(r'\b\d{6}\b', address)
-    if pin_match: pincode = pin_match.group(0)
-    parts = [p.strip() for p in address.split(',')]
-    if len(parts) >= 2:
-        state = parts[-1].replace(pincode, "").strip()
-        city = parts[-2]
-    return city, state, pincode
-
-# ==========================================
-# SCRAPER LOGIC
-# ==========================================
-
-def search_google_maps(driver, query):
-    driver.get("https://www.google.com/maps")
-    try:
-        search_box = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "input#searchboxinput"))
-        )
-        search_box.clear()
-        for char in query:
-            search_box.send_keys(char)
-        search_box.send_keys(Keys.ENTER)
-        WebDriverWait(driver, 20).until(
-            lambda d: d.find_elements(By.CSS_SELECTOR, 'div[role="feed"]') or 
-                     d.find_elements(By.CSS_SELECTOR, 'div.fontBodyMedium')
-        )
-        return True
-    except:
-        return False
-
-def scroll_results(driver, target=55):
-    try:
-        feed = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="feed"]'))
-        )
-        last_count = 0
-        for _ in range(15):
-            driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', feed)
-            time.sleep(2)
-            results = driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
-            if len(results) >= target: break
-            if len(results) == last_count: break
-            last_count = len(results)
-        return driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
-    except:
-        return []
-
-def extract_details(driver, index):
-    data = {'Business Name': '', 'Full Address': '', 'Phone Number': '', 'Website URL': '', 'Star Rating': '', 'Review Count': '', 'Business Category': '', 'Google Maps URL': '', 'Business Hours': '', 'Description': '', 'Scraped Date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'City': '', 'State': '', 'Pincode': '', 'Latitude': '', 'Longitude': '', 'Open Status': ''}
-    try:
-        results = driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
-        if index >= len(results): return None
-        card = results[index]
-        driver.execute_script("arguments[0].click();", card)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'h1.DUwDvf')))
-        
-        def get_v(sel, attr="text"):
-            try:
-                el = driver.find_element(By.CSS_SELECTOR, sel)
-                return el.get_attribute(attr) if attr != "text" else el.text
-            except: return ""
-
-        data['Business Name'] = clean_text(get_v('h1.DUwDvf'))
-        data['Google Maps URL'] = driver.current_url
-        data['Business Category'] = clean_text(get_v('button[jsaction*="category"]'))
-        data['Star Rating'] = get_v('span.ceis6c')
-        data['Full Address'] = clean_text(get_v('button[data-item-id="address"]'))
-        data['Phone Number'] = clean_text(get_v('button[data-item-id*="phone"]'))
-        data['Website URL'] = get_v('a[data-item-id="authority"]', "href")
-        data['City'], data['State'], data['Pincode'] = parse_address_details(data['Full Address'])
-        
-        coords = re.search(r'@([-.\d]+),([-.\d]+)', driver.current_url)
-        if coords: data['Latitude'], data['Longitude'] = coords.group(1), coords.group(2)
-        data['Open Status'] = "Active"
-    except:
-        return None
-    return data
+from webdriver_manager.chrome import ChromeDriverManager
 
 def run_scraper(query):
-    print(f"Launching Scraper Engine for: {query}")
-    driver = setup_driver()
-    if not driver:
-        print("CRITICAL: Scraper Engine Failed to Start (Driver Error).")
-        return [], 0
+    print("Launching browser", flush=True)
+    options = Options()
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     
-    leads = []
-    seen = set()
+    # Check for Render environment
+    is_render = os.environ.get('RENDER') is not None
+    if is_render:
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+
+    driver = None
     try:
-        print("Navigating to Google Maps...")
-        if search_google_maps(driver, query):
-            print("Search query submitted successfully.")
-            
-            # Wait for results panel to appear
-            print("Waiting for results to load...")
-            elements = scroll_results(driver, 55)
-            
-            if not elements:
-                print("No results found in the side panel for this query.")
-                return [], 0
-                
-            print(f"Detected {len(elements)} possible results. Starting deep extraction...")
-            
-            for i in range(len(elements)):
-                print(f"Processing item {i+1} of {len(elements)}...")
-                lead = extract_details(driver, i)
-                if lead and lead['Business Name']:
-                    uid = f"{lead['Business Name']}_{lead['Full Address']}".lower()
-                    if uid not in seen:
-                        leads.append(lead)
-                        seen.add(uid)
-                        print(f"SUCCESS: Extracted {lead['Business Name']}")
-                    else:
-                        print(f"SKIP: Duplicate entry found ({lead['Business Name']})")
-                else:
-                    print(f"SKIP: Extraction failed for item {i+1}")
-                    
-                if len(leads) >= 50:
-                    print("Reached target of 50 unique leads. Stopping extraction.")
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options
+        )
+        
+        # Anti-detection
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        print("Opening Maps", flush=True)
+        driver.get("https://www.google.com/maps")
+        time.sleep(10) # Full load wait
+        
+        # Dismiss initial popups (Sign In, Cookies, etc)
+        try:
+            popups = driver.find_elements(By.CSS_SELECTOR, "button[aria-label*='Accept'], button[aria-label*='Agree'], button[aria-label*='Dismiss']")
+            if popups:
+                popups[0].click()
+                time.sleep(2)
+        except: pass
+
+        print("Searching", flush=True)
+        # Multi-selector search box detection
+        search_box = None
+        selectors = [
+            (By.ID, "searchboxinput"),
+            (By.CSS_SELECTOR, "input[aria-label*='Search']"),
+            (By.NAME, "q"),
+            (By.TAG_NAME, "input")
+        ]
+        
+        for by, selector in selectors:
+            try:
+                search_box = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((by, selector)))
+                if search_box: 
+                    # Click first to ensure focus
+                    driver.execute_script("arguments[0].click();", search_box)
+                    time.sleep(1)
                     break
-                    
-                # Anti-detection delay
-                time.sleep(random.uniform(0.1, 0.3))
+            except: continue
             
-            if leads:
-                print(f"Saving {len(leads)} leads to local CSV...")
-                df = pd.DataFrame(leads)
-                df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
-                
-                print("Syncing results with Google Sheets...")
-                upload_to_sheets(leads)
-            else:
-                print("Extraction completed but 0 valid leads were collected.")
-                
-            print("Engine Shutdown: Process completed successfully.")
-        else:
-            print("Search Failed: Could not interact with the Google Maps search box.")
+        if not search_box:
+            raise Exception("Search box not found after multiple attempts")
             
-        return leads, len(leads)
+        search_box.clear()
+        # Type slowly to mimic human
+        for char in query:
+            search_box.send_keys(char)
+            time.sleep(0.05)
+        search_box.send_keys(Keys.ENTER)
+        
+        print("Waiting for results...", flush=True)
+        time.sleep(8) 
+        
+        print("Scrolling", flush=True)
+        # Find the results panel
+        try:
+            panel = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="feed"]'))
+            )
+            print("Results feed detected", flush=True)
+        except:
+            print("Warning: Results feed role='feed' not found, using fallback", flush=True)
+            try:
+                panel = driver.find_element(By.CSS_SELECTOR, 'div[aria-label*="Results for"]')
+            except:
+                panel = driver.find_element(By.TAG_NAME, "body")
+
+        for i in range(15):
+            driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', panel)
+            time.sleep(2)
+            if i % 5 == 0: print(f"Scrolling... {i+1}/15", flush=True)
+
+        print("Extracting", flush=True)
+        leads = []
+        # Google Maps results cards
+        results = driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
+        print(f"Detected {len(results)} potential results", flush=True)
+        
+        seen_names = set()
+        for res in results:
+            try:
+                # Basic extraction from the card
+                name = ""
+                address = ""
+                phone = ""
+                website = ""
+                
+                try: name = res.get_attribute("aria-label")
+                except: pass
+                
+                if not name:
+                    try: name = res.find_element(By.CSS_SELECTOR, ".fontHeadlineSmall").text
+                    except: pass
+
+                if not name or name in seen_names: continue
+                seen_names.add(name)
+                
+                # Try to get more info from the card text
+                card_text = res.text.split("\n")
+                if len(card_text) > 1:
+                    # Address is often the line with rating or similar, or just next line
+                    for line in card_text[1:]:
+                        if any(char.isdigit() for char in line) and len(line) > 10:
+                            address = line
+                            break
+
+                leads.append({
+                    "Business Name": name,
+                    "Full Address": address,
+                    "Phone Number": phone,
+                    "Website URL": website,
+                    "Date": time.strftime("%Y-%m-%d %H:%M:%S")
+                })
+                print(f"SUCCESS: {name}", flush=True)
+                
+                if len(leads) >= 60: break
+            except: continue
+
+        if leads:
+            print("Saving CSV", flush=True)
+            df = pd.DataFrame(leads)
+            df.to_csv("leads.csv", index=False, encoding='utf-8-sig')
+            
+        print("Completed", flush=True)
+        if not is_render:
+            time.sleep(5)
+            
     except Exception as e:
-        print(f"CRITICAL ENGINE ERROR: {e}")
-        return [], 0
+        print(f"Error happened: {e}", flush=True)
+        if not is_render and driver:
+            # Only wait for input if NOT running in a subprocess that app.py might kill
+            # But for debugging, we can keep it for a bit
+            time.sleep(10)
     finally:
-        if driver: driver.quit()
+        if driver:
+            driver.quit()
 
 if __name__ == "__main__":
-    import sys
-    query_str = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else input("Query: ")
-    run_scraper(query_str)
+    q = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "dentists hyderabad"
+    run_scraper(q)
