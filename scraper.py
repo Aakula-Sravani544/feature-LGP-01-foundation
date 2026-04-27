@@ -195,40 +195,64 @@ def run_scraper(query):
     print(f"Launching Scraper Engine for: {query}")
     driver = setup_driver()
     if not driver:
-        print("Scraper Engine Failed to Start. Checking for fallback data...")
+        print("CRITICAL: Scraper Engine Failed to Start (Driver Error).")
         return [], 0
     
     leads = []
     seen = set()
     try:
+        print("Navigating to Google Maps...")
         if search_google_maps(driver, query):
-            print("Google Maps Opened Successfully.")
+            print("Search query submitted successfully.")
+            
+            # Wait for results panel to appear
+            print("Waiting for results to load...")
             elements = scroll_results(driver, 55)
-            print(f"Found {len(elements)} possible results. Starting extraction...")
+            
+            if not elements:
+                print("No results found in the side panel for this query.")
+                return [], 0
+                
+            print(f"Detected {len(elements)} possible results. Starting deep extraction...")
             
             for i in range(len(elements)):
+                print(f"Processing item {i+1} of {len(elements)}...")
                 lead = extract_details(driver, i)
                 if lead and lead['Business Name']:
                     uid = f"{lead['Business Name']}_{lead['Full Address']}".lower()
                     if uid not in seen:
                         leads.append(lead)
                         seen.add(uid)
-                        print(f"[{len(leads)}] Extracted: {lead['Business Name']}")
-                if len(leads) >= 50: break
+                        print(f"SUCCESS: Extracted {lead['Business Name']}")
+                    else:
+                        print(f"SKIP: Duplicate entry found ({lead['Business Name']})")
+                else:
+                    print(f"SKIP: Extraction failed for item {i+1}")
+                    
+                if len(leads) >= 50:
+                    print("Reached target of 50 unique leads. Stopping extraction.")
+                    break
+                    
+                # Anti-detection delay
                 time.sleep(random.uniform(0.1, 0.3))
             
             if leads:
-                print("Saving data to local CSV...")
+                print(f"Saving {len(leads)} leads to local CSV...")
                 df = pd.DataFrame(leads)
                 df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
                 
-                print("Syncing with Google Sheets Database...")
+                print("Syncing results with Google Sheets...")
                 upload_to_sheets(leads)
+            else:
+                print("Extraction completed but 0 valid leads were collected.")
                 
-            print("Process completed.")
+            print("Engine Shutdown: Process completed successfully.")
+        else:
+            print("Search Failed: Could not interact with the Google Maps search box.")
+            
         return leads, len(leads)
     except Exception as e:
-        print(f"Scraper Error: {e}")
+        print(f"CRITICAL ENGINE ERROR: {e}")
         return [], 0
     finally:
         if driver: driver.quit()
