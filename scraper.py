@@ -10,10 +10,52 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import undetected_chromedriver as uc
 import sys
+import hashlib
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ==========================================
 # CONFIGURATION & UTILITIES
 # ==========================================
+
+def get_lead_id(name, address):
+    """Generates a unique 12-character lead_id using MD5 hash of name and address."""
+    unique_str = f"{name}_{address}".lower().strip()
+    return hashlib.md5(unique_str.encode()).hexdigest()[:12]
+
+def upload_to_sheets(leads):
+    """Uploads a list of lead dictionaries to the LeadPulse_Data Google Sheet."""
+    if not leads: return
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_file("creds.json", scopes=scope)
+        client = gspread.authorize(creds)
+        
+        # Open the spreadsheet
+        sh = client.open("LeadPulse_Data")
+        sheet = sh.sheet1
+        
+        # Prepare data for bulk upload (Headers if empty)
+        if not sheet.get_all_values():
+            headers = ["Lead ID"] + list(leads[0].keys())
+            sheet.append_row(headers)
+        
+        # Get existing IDs to prevent duplicates in the sheet
+        existing_ids = set(sheet.col_values(1))
+        
+        rows_to_add = []
+        for lead in leads:
+            lid = get_lead_id(lead['Business Name'], lead['Full Address'])
+            if lid not in existing_ids:
+                row = [lid] + list(lead.values())
+                rows_to_add.append(row)
+                existing_ids.add(lid)
+        
+        if rows_to_add:
+            sheet.append_rows(rows_to_add)
+            print(f"Uploaded {len(rows_to_add)} new leads to Google Sheets.")
+    except Exception as e:
+        print(f"Google Sheets Upload Failed: {e}")
 
 def setup_driver():
     """Initializes the browser with cross-platform (Windows/Linux) support."""
@@ -176,9 +218,14 @@ def run_scraper(query):
                 time.sleep(random.uniform(0.1, 0.3))
             
             if leads:
+                print("Saving data to local CSV...")
                 df = pd.DataFrame(leads)
                 df.to_csv('day2_leads.csv', index=False, encoding='utf-8-sig', quoting=1)
-                print("CSV Generated Successfully.")
+                
+                print("Syncing with Google Sheets Database...")
+                upload_to_sheets(leads)
+                
+            print("Process completed.")
         return leads, len(leads)
     except Exception as e:
         print(f"Scraper Error: {e}")
