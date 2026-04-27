@@ -1,7 +1,12 @@
+# LeadPulse Pro Scraper v7.2 (0-Lead Permanent Fix)
 import time
 import pandas as pd
 import sys
 import os
+import json
+import traceback
+import hashlib
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -11,160 +16,178 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-def run_scraper(query):
-    print("Launching browser", flush=True)
+# Day 3 & Rescue v7.2 Imports
+try:
+    from google_sheets import save_to_google_sheets, generate_lead_id
+except ImportError:
+    def generate_lead_id(n, a): return hashlib.md5(f"{n}{a}".encode()).hexdigest()
+    save_to_google_sheets = None
+
+def setup_driver():
+    """Initializes a production-ready Chrome driver."""
     options = Options()
     options.add_argument("--start-maximized")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
+    options.add_experimental_option("useAutomationExtension", False)
     
-    # Check for Render environment
-    is_render = os.environ.get('RENDER') is not None
-    if is_render:
+    if os.environ.get('RENDER'):
         options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
 
-    driver = None
     try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options
-        )
-        
-        # Anti-detection
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        print("Opening Maps", flush=True)
-        driver.get("https://www.google.com/maps")
-        time.sleep(10) # Full load wait
-        
-        # Dismiss initial popups (Sign In, Cookies, etc)
-        try:
-            popups = driver.find_elements(By.CSS_SELECTOR, "button[aria-label*='Accept'], button[aria-label*='Agree'], button[aria-label*='Dismiss']")
-            if popups:
-                popups[0].click()
-                time.sleep(2)
-        except: pass
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(20)
+        print("LOG: Chrome launched", flush=True)
+        return driver
+    except Exception as e:
+        print(f"ERROR: Chrome launch failed - {str(e)}", flush=True)
+        return None
 
-        print("Searching", flush=True)
-        # Multi-selector search box detection
+def run_scraper(query):
+    driver = setup_driver()
+    if not driver: return
+
+    leads_collected = []
+    
+    try:
+        # STEP 1: OPEN GOOGLE MAPS
+        print("LOG: Google Maps Opened", flush=True)
+        driver.get("https://www.google.com/maps")
+        time.sleep(5)
+
+        # STEP 2: HANDLE SEARCH (MULTI-SELECTOR)
+        print("LOG: Finding search box...", flush=True)
         search_box = None
-        selectors = [
+        sb_selectors = [
             (By.ID, "searchboxinput"),
             (By.CSS_SELECTOR, "input[aria-label*='Search']"),
-            (By.NAME, "q"),
-            (By.TAG_NAME, "input")
+            (By.CSS_SELECTOR, "input[aria-label*='Maps']"),
+            (By.CSS_SELECTOR, "input[role='combobox']")
         ]
         
-        for by, selector in selectors:
+        for by, sel in sb_selectors:
             try:
-                search_box = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((by, selector)))
-                if search_box: 
-                    # Click first to ensure focus
-                    driver.execute_script("arguments[0].click();", search_box)
-                    time.sleep(1)
-                    break
+                search_box = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((by, sel)))
+                if search_box: break
             except: continue
             
         if not search_box:
-            raise Exception("Search box not found after multiple attempts")
-            
+            driver.save_screenshot("error_debug.png")
+            raise Exception("ERROR: Search box not found after multiple attempts.")
+
         search_box.clear()
-        # Type slowly to mimic human
-        for char in query:
-            search_box.send_keys(char)
-            time.sleep(0.05)
+        search_box.send_keys(query)
         search_box.send_keys(Keys.ENTER)
-        
-        print("Waiting for results...", flush=True)
-        time.sleep(8) 
-        
-        print("Scrolling", flush=True)
-        # Find the results panel
-        try:
-            panel = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="feed"]'))
-            )
-            print("Results feed detected", flush=True)
-        except:
-            print("Warning: Results feed role='feed' not found, using fallback", flush=True)
-            try:
-                panel = driver.find_element(By.CSS_SELECTOR, 'div[aria-label*="Results for"]')
-            except:
-                panel = driver.find_element(By.TAG_NAME, "body")
+        print("LOG: Search Submitted", flush=True)
+        time.sleep(5)
 
-        for i in range(15):
-            driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', panel)
-            time.sleep(2)
-            if i % 5 == 0: print(f"Scrolling... {i+1}/15", flush=True)
-
-        print("Extracting", flush=True)
-        leads = []
-        # Google Maps results cards
-        results = driver.find_elements(By.CSS_SELECTOR, 'div[role="article"]')
-        print(f"Detected {len(results)} potential results", flush=True)
+        # STEP 3: FIND RESULTS PANEL & CARDS (MULTI-SELECTOR + RETRY)
+        cards = []
+        card_selectors = [
+            "div.Nv2PK", 
+            "div[role='article']", 
+            ".hfpxzc", 
+            "a.hfpxzc"
+        ]
         
-        seen_names = set()
-        for res in results:
-            try:
-                # Basic extraction from the card
-                name = ""
-                address = ""
-                phone = ""
-                website = ""
+        for attempt in range(3):
+            # Find Results Panel
+            feed = None
+            for f_sel in ['div[role="feed"]', 'div.m6QErb.DxyBCb', "div[aria-label*='Results']"]:
+                try:
+                    feed = driver.find_element(By.CSS_SELECTOR, f_sel)
+                    if feed: break
+                except: continue
+            
+            if feed:
+                # Requirement 4: Auto Scroll
+                print(f"LOG: Scrolling results (Attempt {attempt+1})...", flush=True)
+                for _ in range(8):
+                    driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', feed)
+                    time.sleep(1.5)
                 
-                try: name = res.get_attribute("aria-label")
+                # Check for cards
+                for c_sel in card_selectors:
+                    cards = driver.find_elements(By.CSS_SELECTOR, c_sel)
+                    if len(cards) > 0: break
+            
+            if len(cards) > 0: break
+            time.sleep(3)
+            
+        print(f"LOG: Cards Found = {len(cards)}", flush=True)
+        
+        if not cards:
+            driver.save_screenshot("error_debug.png")
+            raise Exception("No leads extracted from Google Maps. Check selectors.")
+
+        # STEP 4: EXTRACTION LOOP
+        total_to_process = min(len(cards), 50)
+        
+        for i in range(total_to_process):
+            print(f"LOG: Processing Card {i+1}", flush=True)
+            try:
+                # Refetch to avoid stale elements
+                curr_cards = driver.find_elements(By.CSS_SELECTOR, card_selectors[0]) if i == 0 else driver.find_elements(By.CSS_SELECTOR, card_selectors[0]) # Simplified for brevity, use same logic as discovery
+                # Re-discovery for safety
+                found_cards = []
+                for c_sel in card_selectors:
+                    found_cards = driver.find_elements(By.CSS_SELECTOR, c_sel)
+                    if len(found_cards) > 0: break
+                
+                if i >= len(found_cards): break
+                card = found_cards[i]
+                
+                driver.execute_script("arguments[0].scrollIntoView(true);", card)
+                driver.execute_script("arguments[0].click();", card)
+                time.sleep(1.5)
+                
+                # Field Extraction
+                name = "N/A"
+                try: name = driver.find_element(By.CSS_SELECTOR, 'h1.DUwDvf').text
                 except: pass
                 
-                if not name:
-                    try: name = res.find_element(By.CSS_SELECTOR, ".fontHeadlineSmall").text
-                    except: pass
-
-                if not name or name in seen_names: continue
-                seen_names.add(name)
+                if name == "N/A" or not name.strip(): continue # Requirement 6: Must have name
                 
-                # Try to get more info from the card text
-                card_text = res.text.split("\n")
-                if len(card_text) > 1:
-                    # Address is often the line with rating or similar, or just next line
-                    for line in card_text[1:]:
-                        if any(char.isdigit() for char in line) and len(line) > 10:
-                            address = line
-                            break
-
-                leads.append({
-                    "Business Name": name,
-                    "Full Address": address,
-                    "Phone Number": phone,
-                    "Website URL": website,
-                    "Date": time.strftime("%Y-%m-%d %H:%M:%S")
-                })
-                print(f"SUCCESS: {name}", flush=True)
+                address = "N/A"
+                try: address = driver.find_element(By.CSS_SELECTOR, 'button[data-item-id="address"]').text
+                except: pass
                 
-                if len(leads) >= 60: break
+                phone = "N/A"
+                try: phone = driver.find_element(By.CSS_SELECTOR, 'button[data-item-id*="phone"]').text
+                except: pass
+                
+                website = "N/A"
+                try: website = driver.find_element(By.CSS_SELECTOR, 'a[data-item-id="authority"]').get_attribute('href')
+                except: pass
+                
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                lead_data = {
+                    "Business Name": name, "Address": address, "Phone Number": phone,
+                    "Website URL": website, "Query": query, "Timestamp": ts,
+                    "Generated Time": ts # Standardizing
+                }
+                
+                # Output for app.py
+                print(f"DATA: {json.dumps(lead_data)}", flush=True)
+                leads_collected.append(lead_data)
+                
             except: continue
 
-        if leads:
-            print("Saving CSV", flush=True)
-            df = pd.DataFrame(leads)
-            df.to_csv("leads.csv", index=False, encoding='utf-8-sig')
-            
-        print("Completed", flush=True)
-        if not is_render:
-            time.sleep(5)
+        if not leads_collected:
+            raise Exception("No leads extracted from Google Maps after processing cards.")
+
+        print(f"LOG: Saved {len(leads_collected)} Leads", flush=True)
+        print("FINISH: Extraction Completed.", flush=True)
             
     except Exception as e:
-        print(f"Error happened: {e}", flush=True)
-        if not is_render and driver:
-            # Only wait for input if NOT running in a subprocess that app.py might kill
-            # But for debugging, we can keep it for a bit
-            time.sleep(10)
+        print(f"ERROR: {str(e)}", flush=True)
+        # traceback.print_exc() # Hidden to keep logs clean per user preference, but error is printed
     finally:
-        if driver:
-            driver.quit()
+        if driver: driver.quit()
 
 if __name__ == "__main__":
-    q = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "dentists hyderabad"
+    q = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "hotels hyderabad"
     run_scraper(q)

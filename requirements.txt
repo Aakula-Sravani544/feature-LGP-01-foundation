@@ -2,9 +2,7 @@ streamlit
 pandas
 selenium
 webdriver-manager
-undetected-chromedriver
 gspread
 google-auth
-beautifulsoup4
-lxml
 plotly
+undetected-chromedriver
